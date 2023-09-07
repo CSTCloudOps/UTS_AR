@@ -3,6 +3,7 @@
 ## AR_TEST
 ```
 /bin/bash run_all.sh
+--gfm means using feaquency information or not(1 means using).
 ```
 
 ## Get Started
