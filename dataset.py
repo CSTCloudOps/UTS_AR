@@ -80,25 +80,26 @@ class UniDataset(torch.utils.data.Dataset):
             value_all.append(values)
             label_all.append(labels)
             missing_all.append(missing)
-            self.sample_num += max(len(values) - window + 1, 0)
+            self.sample_num += max(len(values) - window, 0)
         self.samples, self.labels, self.miss_label = self.__getsamples(
             value_all, label_all, missing_all
         )
 
     def __getsamples(self, values, labels, missing):
         X = torch.zeros((self.sample_num, 1, self.window))
-        Y = torch.zeros((self.sample_num, self.window))
-        Z = torch.zeros((self.sample_num, self.window))
+        Y = torch.zeros((self.sample_num, 1))
+        Z = torch.zeros((self.sample_num, 1))
         i = 0
         for cnt in range(len(values)):
             v = values[cnt]
             l = labels[cnt]
             m = missing[cnt]
-            for j in range(len(v) - self.window + 1):
+            for j in range(len(v) - self.window):
                 X[i, 0, :] = torch.from_numpy(v[j : j + self.window])
-                Y[i, :] = torch.from_numpy(np.asarray(l[j : j + self.window]))
-                Z[i, :] = torch.from_numpy(np.asarray(m[j : j + self.window]))
+                Y[i, :] = torch.from_numpy(np.array(l[j + self.window]))
+                Z[i, :] = torch.from_numpy(np.array(v[j + self.window]))
                 i += 1
+        print(X,Y,Z)
         return (X, Y, Z)
 
     def __len__(self):

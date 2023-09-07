@@ -53,34 +53,33 @@ class MyVAE(LightningModule):
             ]
         )
 
-    def forward(self, x, mode, mask):
-        x = x.view(-1, 1, self.window)
-        return self.vae.forward(x, mode, mask)
-
-    def loss(self, x, y_all, z_all, mode="train"):
-        y = (y_all[:, -1]).unsqueeze(1)
-        if self.hp.use_label==1:
-            mask = torch.logical_not(torch.logical_or(y_all, z_all))
-        else:
-            mask = torch.logical_not(z_all)
-        mu_x, var_x, rec_x, mu, var, loss = self.forward(
-            x,
-            "train",
-            mask,
+        self.ar = nn.Sequential(
+            nn.Linear(self.hp.window,self.hp.window),
+            nn.Tanh(),
+            nn.Linear(self.hp.window,1),
         )
-        loss_val = loss
-        if mode == "test":
-            mu_x_test, recon_prob = self.forward(x, "test", z_all)
-            return mu_x, var_x, recon_prob, mu_x_test
+        self.ar_with_gfm = nn.Sequential(
+            nn.Linear(3*self.hp.window,self.hp.window),
+            nn.Tanh(),
+            nn.Linear(self.hp.window,1),
+        )
+
+    def forward(self, x):
+        x = x.view(-1, 1, self.window)
+        if self.hp.gfm == 1:
+            frequency = torch.fft.fft(x,dim=-1)
+            predict = self.ar_with_gfm(torch.cat((x,frequency.real, frequency.imag),dim=-1))
+        else:
+            predict = self.ar(x)
+        return predict
+
+    def loss(self, x, predict):
+        loss_val = torch.mean((x-predict)**2)
         return loss_val
 
     def training_step(self, data_batch, batch_idx):
         x, y_all, z_all = data_batch
-        y_all2 = torch.zeros_like(y_all)
-        x, y_all2, z_all = self.batch_data_augmentation(x, y_all2, z_all)
-        loss_val = self.loss(x, y_all2, z_all)
-        if self.trainer.strategy == "dp":
-            loss_val = loss_val.unsqueeze(0)
+        loss_val = self.loss(z_all, self.forward(x).squeeze(1))
         self.log("val_loss_train", loss_val, on_step=True, on_epoch=False, logger=True)
         output = OrderedDict(
             {
@@ -91,10 +90,7 @@ class MyVAE(LightningModule):
 
     def validation_step(self, data_batch, batch_idx):
         x, y_all, z_all = data_batch
-        y_all_wo_label = torch.zeros_like(y_all)
-        loss_val = self.loss(x, y_all_wo_label, z_all)
-        if self.trainer.strategy == "dp":
-            loss_val = loss_val.unsqueeze(0)
+        loss_val = self.loss(z_all, self.forward(x).squeeze(1))
         self.log("val_loss_valid", loss_val, on_step=True, on_epoch=True, logger=True)
         output = OrderedDict(
             {
@@ -105,38 +101,19 @@ class MyVAE(LightningModule):
 
     def test_step(self, data_batch, batch_idx):
         x, y_all, z_all = data_batch
-        y = (y_all[:, -1]).unsqueeze(1)
-        with torch.no_grad():
-            mu_x, var_x, recon_prob, mu_x_test = self.loss(x, y_all, z_all, "test")
-        recon_prob = recon_prob[:, :, -1]
+        predict = self.forward(x).squeeze(1)
+        anomaly_socre = (predict-z_all)**2
         output = OrderedDict(
             {
-                "y": y.cpu(),
-                "recon_prob": recon_prob.cpu(),
-                "mu_x": mu_x[:, :, -1].cpu(),
-                "mu_x_test": mu_x_test[:, :, -1].cpu(),
-                "x": x[:, :, -1].cpu(),
-                "var_x": var_x[:, :, -1].cpu(),
+                "anomaly_score": anomaly_socre.cpu(),
+                "label": y_all.cpu()
             }
         )
         return output
 
     def test_epoch_end(self, outputs):
-        y = torch.cat(([x["y"] for x in outputs]), 0)
-        recon_prob = torch.cat(([x["recon_prob"] for x in outputs]), 0)
-        x = torch.cat(([x["x"] for x in outputs]), 0)
-        mu_x = torch.cat(([x["mu_x"] for x in outputs]), 0)
-        mu_x_test = torch.cat(([x["mu_x_test"] for x in outputs]), 0)
-        var_x = torch.cat(([x["var_x"] for x in outputs]), 0)
-        score = -1 * recon_prob.squeeze(1).cpu().numpy()
-        label = y.squeeze(1).cpu().numpy()
-        df = pd.DataFrame()
-        df["x"] = x.cpu().numpy().reshape(-1)
-        df["mu_x"] = mu_x.cpu().numpy().reshape(-1)
-        df["mu_x_test"] = mu_x_test.cpu().numpy().reshape(-1)
-        df["var_x"] = var_x.cpu().numpy().reshape(-1)
-        df["y"] = y.cpu().numpy().reshape(-1)
-        df["recon"] = score.reshape(-1)
+        score = torch.cat(([x["anomaly_score"] for x in outputs]), 0).numpy()
+        label = torch.cat(([x["label"] for x in outputs]), 0).numpy()
         np.save('./npy/score.npy',score)
         np.save('./npy/label.npy',label)
         if self.hp.data_dir == './data/Yahoo':
@@ -147,12 +124,6 @@ class MyVAE(LightningModule):
             k=7
         delay_f1_score, delay_precison, delay_recall,delay_predict = delay_f1(score, label,k)
         best_f1_socre, best_precison,best_recall,best_predict = best_f1(score, label)
-        df['delay_predict'] = delay_predict
-        df['best_predict'] = best_predict
-        df.to_csv(
-            "./csv/result.csv",
-            index=False,
-        )
         file_name = self.hp.save_file
         with open(file_name, "a") as f:
             f.write(
@@ -237,6 +208,7 @@ class MyVAE(LightningModule):
         parser.add_argument("--dropout_rate", default=0.05, type=float)
         parser.add_argument("--gpu", default=0, type=int)
         parser.add_argument("--use_label", default=1, type=int)
+        parser.add_argument("--gfm", default=1, type=int)
         return parser
 
     def batch_data_augmentation(self, x, y, z):

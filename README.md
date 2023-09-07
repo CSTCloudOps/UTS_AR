@@ -1,7 +1,9 @@
-# FCVAE(ICDE 2024 Under Review)
-Revisiting VAE for Unsupervised Time Series Anomaly Detection: A Frequency Perspective  
-&bull;A new CVAE structure that using frequency as a condition.  
-&bull;Using global and local frequency information makes CVAE better reconstruct normal patterns.
+# AR_UTS
+
+## AR_TEST
+```
+/bin/bash run_all.sh
+```
 
 ## Get Started
 1. Install Python=3.9.13, Pytorch=1.12.1, Pytorch_lightning=1.7.7, Numpy, Pandas
